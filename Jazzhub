@@ -1,0 +1,678 @@
+-- LocalScript (put in StarterGui or StarterPlayerScripts)
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- Remote (Level Rewards)
+local RequestLevelReward = ReplicatedStorage
+	:WaitForChild("Packages")
+	:WaitForChild("_Index")
+	:WaitForChild("sleitnick_knit@1.7.0")
+	:WaitForChild("knit")
+	:WaitForChild("Services")
+	:WaitForChild("SeasonService")
+	:WaitForChild("RF")
+	:WaitForChild("RequestLevelReward")
+
+-- Remote (Style Roll)
+local StyleRoll = ReplicatedStorage
+	:WaitForChild("Packages")
+	:WaitForChild("_Index")
+	:WaitForChild("sleitnick_knit@1.7.0")
+	:WaitForChild("knit")
+	:WaitForChild("Services")
+	:WaitForChild("StyleService")
+	:WaitForChild("RF")
+	:WaitForChild("Roll")
+
+-- Remote (Ability Roll) - tries AbilityService first, falls back to StyleRoll
+local ABILITY_ROLL_ARG = true -- change if needed (check via Dex Explorer)
+local AbilityRoll
+pcall(function()
+	AbilityRoll = ReplicatedStorage
+		:WaitForChild("Packages")
+		:WaitForChild("_Index")
+		:WaitForChild("sleitnick_knit@1.7.0")
+		:WaitForChild("knit")
+		:WaitForChild("Services")
+		:WaitForChild("AbilityService")
+		:WaitForChild("RF")
+		:WaitForChild("Roll")
+end)
+if not AbilityRoll then
+	AbilityRoll = StyleRoll
+end
+
+-- ========== UI ==========
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "RankedLevelUI"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = playerGui
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "Main"
+mainFrame.Size = UDim2.new(0, 720, 0, 240)
+mainFrame.Position = UDim2.new(0.5, -360, 0.5, -120)
+mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+mainFrame.BorderSizePixel = 0
+mainFrame.Active = true
+mainFrame.Parent = screenGui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 10)
+corner.Parent = mainFrame
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 32)
+title.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+title.BorderSizePixel = 0
+title.Text = "Ranked Rewards"
+title.TextColor3 = Color3.fromRGB(255, 255, 255)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 15
+title.Parent = mainFrame
+
+local titleCorner = Instance.new("UICorner")
+titleCorner.CornerRadius = UDim.new(0, 10)
+titleCorner.Parent = title
+
+local titleFix = Instance.new("Frame")
+titleFix.Size = UDim2.new(1, 0, 0, 12)
+titleFix.Position = UDim2.new(0, 0, 1, -12)
+titleFix.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+titleFix.BorderSizePixel = 0
+titleFix.Parent = title
+
+-- Minimize button
+local minBtn = Instance.new("TextButton")
+minBtn.Name = "Minimize"
+minBtn.Size = UDim2.new(0, 24, 0, 24)
+minBtn.Position = UDim2.new(1, -28, 0, 4)
+minBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+minBtn.BorderSizePixel = 0
+minBtn.Text = "-"
+minBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+minBtn.Font = Enum.Font.GothamBold
+minBtn.TextSize = 16
+minBtn.AutoButtonColor = false
+minBtn.Parent = title
+
+local minBtnCorner = Instance.new("UICorner")
+minBtnCorner.CornerRadius = UDim.new(0, 6)
+minBtnCorner.Parent = minBtn
+
+-- Logo button
+local logo = Instance.new("TextButton")
+logo.Name = "Logo"
+logo.Size = UDim2.new(0, 40, 0, 30)
+logo.Position = UDim2.new(0, 10, 0, 10)
+logo.BackgroundColor3 = Color3.fromRGB(80, 160, 255)
+logo.BorderSizePixel = 0
+logo.Text = "RR"
+logo.TextColor3 = Color3.fromRGB(255, 255, 255)
+logo.Font = Enum.Font.GothamBold
+logo.TextSize = 14
+logo.AutoButtonColor = false
+logo.Visible = false
+logo.Parent = screenGui
+
+local logoCorner = Instance.new("UICorner")
+logoCorner.CornerRadius = UDim.new(0, 6)
+logoCorner.Parent = logo
+
+local function setMinimized(min)
+	mainFrame.Visible = not min
+	logo.Visible = min
+	if min then
+		logo.Position = mainFrame.Position + UDim2.new(0, 8, 0, 8)
+	end
+end
+
+minBtn.MouseButton1Click:Connect(function()
+	setMinimized(true)
+end)
+
+logo.MouseButton1Click:Connect(function()
+	setMinimized(false)
+end)
+
+-- ========== HELPER FUNCTIONS (MULTI-TARGET MATCHING) ==========
+-- Parsed string separated by commas into a table of lowercase trimmed strings
+local function parseTargets(rawText)
+	local targets = {}
+	if not rawText or rawText:gsub("%s+", "") == "" then
+		return targets
+	end
+	for name in string.gmatch(rawText, "[^,]+") do
+		local cleaned = name:gsub("^%s+", ""):gsub("%s+$", ""):lower()
+		if cleaned ~= "" then
+			table.insert(targets, cleaned)
+		end
+	end
+	return targets
+end
+
+-- Checks if the current name matches ANY of the target names
+local function matchesAnyTarget(currentName, rawTargetText)
+	if not currentName then return false end
+	local targets = parseTargets(rawTargetText)
+	if #targets == 0 then return false end
+
+	local currentLower = currentName:lower()
+	for _, target in ipairs(targets) do
+		if currentLower == target then
+			return true
+		end
+	end
+	return false
+end
+
+-- ========== DATA ==========
+local rewards = {
+	style   = {arg = 1, color = Color3.fromRGB(80, 160, 255)},
+	yen     = {arg = 2, color = Color3.fromRGB(80, 220, 140)},
+	ability = {arg = 4, color = Color3.fromRGB(255, 140, 80)},
+}
+
+local order = {"style", "yen", "ability"}
+local currentMode = nil
+local buttons = {}
+
+local rollDelay = 1.0
+local rewardDelay = 3.5
+
+local function fireReward(arg)
+	pcall(function()
+		RequestRankedReward:InvokeServer(arg)
+	end)
+end
+
+task.spawn(function()
+	while true do
+		task.wait(rewardDelay)
+		if currentMode and rewards[currentMode] then
+			fireReward(rewards[currentMode].arg)
+		end
+	end
+end)
+
+local function updateButtons()
+	for name, btn in pairs(buttons) do
+		local data = rewards[name]
+		if currentMode == name then
+			btn.BackgroundColor3 = data.color
+			btn.Text = name:upper() .. "  [ON]"
+			btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+		else
+			btn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+			btn.Text = name:upper() .. "  [OFF]"
+			btn.TextColor3 = Color3.fromRGB(200, 200, 200)
+		end
+	end
+end
+
+-- ========== CREATE BUTTONS ==========
+for i, name in ipairs(order) do
+	local data = rewards[name]
+
+	local btn = Instance.new("TextButton")
+	btn.Name = name
+	btn.Size = UDim2.new(0, 220, 0, 30)
+	btn.Position = UDim2.new(0, 15 + (i - 1) * 230, 0, 40)
+	btn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+	btn.BorderSizePixel = 0
+	btn.Text = name:upper() .. "  [OFF]"
+	btn.TextColor3 = Color3.fromRGB(200, 200, 200)
+	btn.Font = Enum.Font.GothamMedium
+	btn.TextSize = 14
+	btn.AutoButtonColor = false
+	btn.Parent = mainFrame
+
+	local btnCorner = Instance.new("UICorner")
+	btnCorner.CornerRadius = UDim.new(0, 6)
+	btnCorner.Parent = btn
+
+	buttons[name] = btn
+
+	btn.MouseButton1Click:Connect(function()
+		if currentMode == name then
+			currentMode = nil
+		else
+			currentMode = name
+			fireReward(data.arg)
+		end
+		updateButtons()
+	end)
+end
+
+-- ========== STYLE AUTO-ROLL SECTION ==========
+local styleToggleEnabled = false
+
+local styleLabel = Instance.new("TextLabel")
+styleLabel.Size = UDim2.new(0, 330, 0, 16)
+styleLabel.Position = UDim2.new(0, 15, 0, 82)
+styleLabel.BackgroundTransparency = 1
+styleLabel.Text = "Style Auto-Roll (pisahkan dengan koma)"
+styleLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+styleLabel.Font = Enum.Font.GothamMedium
+styleLabel.TextSize = 12
+styleLabel.TextXAlignment = Enum.TextXAlignment.Left
+styleLabel.Parent = mainFrame
+
+local styleBox = Instance.new("TextBox")
+styleBox.Name = "StyleTarget"
+styleBox.Size = UDim2.new(0, 330, 0, 26)
+styleBox.Position = UDim2.new(0, 15, 0, 100)
+styleBox.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+styleBox.BorderSizePixel = 0
+styleBox.PlaceholderText = "Style 1, Style 2, Style 3..."
+styleBox.Text = ""
+styleBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+styleBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+styleBox.Font = Enum.Font.Gotham
+styleBox.TextSize = 13
+styleBox.ClearTextOnFocus = false
+styleBox.Parent = mainFrame
+
+local boxCorner = Instance.new("UICorner")
+boxCorner.CornerRadius = UDim.new(0, 6)
+boxCorner.Parent = styleBox
+
+local styleToggleBtn = Instance.new("TextButton")
+styleToggleBtn.Name = "StyleToggle"
+styleToggleBtn.Size = UDim2.new(0, 330, 0, 30)
+styleToggleBtn.Position = UDim2.new(0, 15, 0, 178)
+styleToggleBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+styleToggleBtn.BorderSizePixel = 0
+styleToggleBtn.Text = "AUTO-ROLL  [OFF]"
+styleToggleBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+styleToggleBtn.Font = Enum.Font.GothamMedium
+styleToggleBtn.TextSize = 14
+styleToggleBtn.AutoButtonColor = false
+styleToggleBtn.Parent = mainFrame
+
+local toggleCorner = Instance.new("UICorner")
+toggleCorner.CornerRadius = UDim.new(0, 6)
+toggleCorner.Parent = styleToggleBtn
+
+local function updateStyleToggleVisual()
+	if styleToggleEnabled then
+		styleToggleBtn.BackgroundColor3 = Color3.fromRGB(180, 80, 220)
+		styleToggleBtn.Text = "AUTO-ROLL  [ON]"
+		styleToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	else
+		styleToggleBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+		styleToggleBtn.Text = "AUTO-ROLL  [OFF]"
+		styleToggleBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+	end
+end
+
+local function getCurrentStyleName()
+	local character = workspace:FindFirstChild(player.Name)
+	if not character then return nil end
+
+	local jerseyBack = character:FindFirstChild("JerseyBack")
+	if not jerseyBack then return nil end
+
+	local styleNameObj = jerseyBack:FindFirstChild("StyleName")
+	if not styleNameObj then return nil end
+
+	if styleNameObj:IsA("StringValue") then
+		return styleNameObj.Value
+	elseif styleNameObj:IsA("TextLabel") or styleNameObj:IsA("TextBox") then
+		return styleNameObj.Text
+	end
+
+	local ok, val = pcall(function() return styleNameObj.Value end)
+	if ok and typeof(val) == "string" then return val end
+
+	ok, val = pcall(function() return styleNameObj.Text end)
+	if ok and typeof(val) == "string" then return val end
+
+	return nil
+end
+
+local function fireStyleRoll()
+	pcall(function()
+		StyleRoll:InvokeServer(true)
+	end)
+end
+
+task.spawn(function()
+	while true do
+		task.wait(0.1)
+
+		if not styleToggleEnabled then
+			continue
+		end
+
+		local rawTarget = styleBox.Text
+		if #parseTargets(rawTarget) == 0 then
+			continue
+		end
+
+		local current = getCurrentStyleName()
+		if current == nil then
+			continue
+		end
+
+		if not matchesAnyTarget(current, rawTarget) then
+			fireStyleRoll()
+			task.wait(rollDelay)
+		else
+			styleToggleEnabled = false
+			updateStyleToggleVisual()
+		end
+	end
+end)
+
+styleToggleBtn.MouseButton1Click:Connect(function()
+	styleToggleEnabled = not styleToggleEnabled
+	updateStyleToggleVisual()
+
+	if styleToggleEnabled then
+		local rawTarget = styleBox.Text
+		if #parseTargets(rawTarget) > 0 then
+			local current = getCurrentStyleName()
+			if current and not matchesAnyTarget(current, rawTarget) then
+				fireStyleRoll()
+			end
+		end
+	end
+end)
+
+-- ========== ROLL DELAY SECTION ==========
+local delayLabel = Instance.new("TextLabel")
+delayLabel.Size = UDim2.new(0, 170, 0, 16)
+delayLabel.Position = UDim2.new(0, 365, 0, 82)
+delayLabel.BackgroundTransparency = 1
+delayLabel.Text = "Roll Delay (sec)"
+delayLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+delayLabel.Font = Enum.Font.GothamMedium
+delayLabel.TextSize = 12
+delayLabel.TextXAlignment = Enum.TextXAlignment.Left
+delayLabel.Parent = mainFrame
+
+local delayBox = Instance.new("TextBox")
+delayBox.Name = "RollDelay"
+delayBox.Size = UDim2.new(0, 170, 0, 26)
+delayBox.Position = UDim2.new(0, 365, 0, 100)
+delayBox.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+delayBox.BorderSizePixel = 0
+delayBox.PlaceholderText = "1.0"
+delayBox.Text = "1.0"
+delayBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+delayBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+delayBox.Font = Enum.Font.Gotham
+delayBox.TextSize = 13
+delayBox.ClearTextOnFocus = false
+delayBox.Parent = mainFrame
+
+local delayBoxCorner = Instance.new("UICorner")
+delayBoxCorner.CornerRadius = UDim.new(0, 6)
+delayBoxCorner.Parent = delayBox
+
+local function applyRollDelay()
+	local n = tonumber(delayBox.Text)
+	if n == nil then
+		delayBox.Text = tostring(rollDelay)
+		return
+	end
+	rollDelay = math.max(0, n)
+	delayBox.Text = tostring(rollDelay)
+end
+
+delayBox.FocusLost:Connect(function()
+	applyRollDelay()
+end)
+
+-- ========== RANKED REWARD DELAY ==========
+local rewardDelayLabel = Instance.new("TextLabel")
+rewardDelayLabel.Size = UDim2.new(0, 170, 0, 16)
+rewardDelayLabel.Position = UDim2.new(0, 365, 0, 132)
+rewardDelayLabel.BackgroundTransparency = 1
+rewardDelayLabel.Text = "Ranked Reward Delay (sec)"
+rewardDelayLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+rewardDelayLabel.Font = Enum.Font.GothamMedium
+rewardDelayLabel.TextSize = 12
+rewardDelayLabel.TextXAlignment = Enum.TextXAlignment.Left
+rewardDelayLabel.Parent = mainFrame
+
+local rewardDelayBox = Instance.new("TextBox")
+rewardDelayBox.Name = "RankedRewardDelay"
+rewardDelayBox.Size = UDim2.new(0, 170, 0, 26)
+rewardDelayBox.Position = UDim2.new(0, 365, 0, 150)
+rewardDelayBox.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+rewardDelayBox.BorderSizePixel = 0
+rewardDelayBox.PlaceholderText = "3.5"
+rewardDelayBox.Text = tostring(rewardDelay)
+rewardDelayBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+rewardDelayBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+rewardDelayBox.Font = Enum.Font.Gotham
+rewardDelayBox.TextSize = 13
+rewardDelayBox.ClearTextOnFocus = false
+rewardDelayBox.Parent = mainFrame
+
+local rewardDelayBoxCorner = Instance.new("UICorner")
+rewardDelayBoxCorner.CornerRadius = UDim.new(0, 6)
+rewardDelayBoxCorner.Parent = rewardDelayBox
+
+local function applyRewardDelay()
+	local n = tonumber(rewardDelayBox.Text)
+	if n == nil then
+		rewardDelayBox.Text = tostring(rewardDelay)
+		return
+	end
+	rewardDelay = math.max(0, n)
+	rewardDelayBox.Text = tostring(rewardDelay)
+end
+
+rewardDelayBox.FocusLost:Connect(function()
+	applyRewardDelay()
+end)
+
+-- ========== ABILITY AUTO-ROLL SECTION ==========
+local abilityToggleEnabled = false
+
+local function stripRich(text)
+	if not text then return nil end
+	return (text:gsub("<[^>]*>", ""):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function getCurrentAbilityName()
+	local abilities = playerGui:FindFirstChild("Interface")
+		and playerGui.Interface:FindFirstChild("Lobby")
+		and playerGui.Interface.Lobby:FindFirstChild("Abilities")
+	if not abilities then return nil end
+
+	for _, v in ipairs(abilities:GetDescendants()) do
+		if v:IsA("TextLabel") and v.Name == "Subheader" and v.Text == "EQUIPPED" then
+			for _, sibling in ipairs(v.Parent:GetChildren()) do
+				if sibling:IsA("TextLabel") and sibling.Name == "Title" then
+					local name = stripRich(sibling.Text)
+					if name and name ~= "" and name ~= "LOCKED" then
+						return name
+					end
+				end
+			end
+		end
+	end
+
+	for _, v in ipairs(abilities:GetDescendants()) do
+		if v:IsA("TextLabel") and tostring(v.Text):find("Current Ability") then
+			for _, sibling in ipairs(v.Parent:GetChildren()) do
+				if sibling:IsA("TextLabel") and sibling.Name == "DisplayName" then
+					local name = stripRich(sibling.Text)
+					if name and name ~= "" then
+						return name
+					end
+				end
+			end
+		end
+	end
+
+	return nil
+end
+
+local abilityLabel = Instance.new("TextLabel")
+abilityLabel.Size = UDim2.new(0, 145, 0, 16)
+abilityLabel.Position = UDim2.new(0, 560, 0, 82)
+abilityLabel.BackgroundTransparency = 1
+abilityLabel.Text = "Ability Auto-Roll (koma)"
+abilityLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+abilityLabel.Font = Enum.Font.GothamMedium
+abilityLabel.TextSize = 12
+abilityLabel.TextXAlignment = Enum.TextXAlignment.Left
+abilityLabel.Parent = mainFrame
+
+local abilityBox = Instance.new("TextBox")
+abilityBox.Name = "AbilityTarget"
+abilityBox.Size = UDim2.new(0, 145, 0, 26)
+abilityBox.Position = UDim2.new(0, 560, 0, 100)
+abilityBox.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+abilityBox.BorderSizePixel = 0
+abilityBox.PlaceholderText = "Ability 1, Ability 2..."
+abilityBox.Text = ""
+abilityBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+abilityBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+abilityBox.Font = Enum.Font.Gotham
+abilityBox.TextSize = 13
+abilityBox.ClearTextOnFocus = false
+abilityBox.Parent = mainFrame
+
+local abilityBoxCorner = Instance.new("UICorner")
+abilityBoxCorner.CornerRadius = UDim.new(0, 6)
+abilityBoxCorner.Parent = abilityBox
+
+local abilityToggleBtn = Instance.new("TextButton")
+abilityToggleBtn.Name = "AbilityToggle"
+abilityToggleBtn.Size = UDim2.new(0, 145, 0, 30)
+abilityToggleBtn.Position = UDim2.new(0, 560, 0, 178)
+abilityToggleBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+abilityToggleBtn.BorderSizePixel = 0
+abilityToggleBtn.Text = "AUTO-ROLL  [OFF]"
+abilityToggleBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+abilityToggleBtn.Font = Enum.Font.GothamMedium
+abilityToggleBtn.TextSize = 14
+abilityToggleBtn.AutoButtonColor = false
+abilityToggleBtn.Parent = mainFrame
+
+local abilityToggleCorner = Instance.new("UICorner")
+abilityToggleCorner.CornerRadius = UDim.new(0, 6)
+abilityToggleCorner.Parent = abilityToggleBtn
+
+local function updateAbilityToggleVisual()
+	if abilityToggleEnabled then
+		abilityToggleBtn.BackgroundColor3 = Color3.fromRGB(220, 140, 60)
+		abilityToggleBtn.Text = "AUTO-ROLL  [ON]"
+		abilityToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	else
+		abilityToggleBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+		abilityToggleBtn.Text = "AUTO-ROLL  [OFF]"
+		abilityToggleBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+	end
+end
+
+local function fireAbilityRoll()
+	pcall(function()
+		AbilityRoll:InvokeServer(ABILITY_ROLL_ARG)
+	end)
+end
+
+task.spawn(function()
+	while true do
+		task.wait(0.1)
+
+		if not abilityToggleEnabled then
+			continue
+		end
+
+		local rawTarget = abilityBox.Text
+		if #parseTargets(rawTarget) == 0 then
+			continue
+		end
+
+		local current = getCurrentAbilityName()
+		if current == nil then
+			continue
+		end
+
+		if not matchesAnyTarget(current, rawTarget) then
+			fireAbilityRoll()
+			task.wait(rollDelay)
+		else
+			abilityToggleEnabled = false
+			updateAbilityToggleVisual()
+		end
+	end
+end)
+
+abilityToggleBtn.MouseButton1Click:Connect(function()
+	abilityToggleEnabled = not abilityToggleEnabled
+	updateAbilityToggleVisual()
+
+	if abilityToggleEnabled then
+		local rawTarget = abilityBox.Text
+		if #parseTargets(rawTarget) > 0 then
+			local current = getCurrentAbilityName()
+			if current and not matchesAnyTarget(current, rawTarget) then
+				fireAbilityRoll()
+			end
+		end
+	end
+end)
+
+-- ========== DRAGGABLE ==========
+local function isPointInGuiObject(obj, point)
+	local pos = obj.AbsolutePosition
+	local size = obj.AbsoluteSize
+	return point.X >= pos.X and point.X <= pos.X + size.X
+		and point.Y >= pos.Y and point.Y <= pos.Y + size.Y
+end
+
+local _MAIN_DRAG, _LOGO_DRAG
+
+title.InputBegan:Connect(function(input)
+	if input.UserInputType ~= Enum.UserInputType.MouseButton1
+	and input.UserInputType ~= Enum.UserInputType.Touch then return end
+	if isPointInGuiObject(minBtn, UserInputService:GetMouseLocation()) then return end
+	_MAIN_DRAG = { Moved = mainFrame, Start = input.Position, Base = mainFrame.Position }
+end)
+
+title.InputEnded:Connect(function()
+	_MAIN_DRAG = nil
+end)
+
+logo.InputBegan:Connect(function(input)
+	if input.UserInputType ~= Enum.UserInputType.MouseButton1
+	and input.UserInputType ~= Enum.UserInputType.Touch then return end
+	_LOGO_DRAG = { Moved = mainFrame, Start = input.Position, Base = mainFrame.Position }
+end)
+
+logo.InputEnded:Connect(function()
+	_LOGO_DRAG = nil
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if input.UserInputType ~= Enum.UserInputType.MouseMovement
+	and input.UserInputType ~= Enum.UserInputType.Touch then return end
+	for _, drag in ipairs({ _MAIN_DRAG, _LOGO_DRAG }) do
+		if drag then
+			local delta = input.Position - drag.Start
+			drag.Moved.Position = UDim2.new(
+				drag.Base.X.Scale,
+				drag.Base.X.Offset + delta.X,
+				drag.Base.Y.Scale,
+				drag.Base.Y.Offset + delta.Y
+			)
+			if drag.Moved == mainFrame then
+				logo.Position = mainFrame.Position + UDim2.new(0, 8, 0, 8)
+			end
+		end
+	end
+end)
